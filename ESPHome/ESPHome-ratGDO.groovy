@@ -42,6 +42,7 @@ metadata {
         capability 'Lock'
         capability 'MotionSensor'
         capability 'Pushable Button'
+        capability 'Presence Sensor'
 
         // attribute populated by ESPHome API Library automatically
         attribute 'dryContactLight', 'enum', [ 'open', 'closed' ]
@@ -52,8 +53,23 @@ metadata {
         attribute 'networkStatus', 'enum', [ 'connecting', 'online', 'offline' ]
         attribute 'obstruction', 'enum', [ 'present', 'not present' ]
         attribute 'openings', 'number'
-        attribute 'position', 'number'      
-        
+        attribute 'position', 'number'
+        attribute 'closingDelay', 'number'
+        attribute 'closingDuration', 'number'
+        attribute 'openingDuration', 'number'
+        attribute 'vehicleDistanceTarget', 'number'
+        attribute 'firmwareVersion', 'string'
+        attribute 'voltage', 'number'
+        attribute 'pairedDevices', 'number'
+        attribute 'vehicleDistanceActualFiltered', 'number'
+        attribute 'rollingCodeCounter', 'number'
+        attribute 'clientId', 'number'
+        attribute 'laser', 'enum', [ 'on', 'off' ]
+        attribute 'led', 'enum', [ 'on', 'off' ]
+        attribute 'vehicleMotion', 'enum', [ 'active', 'inactive' ]
+        attribute 'vehicleArriving', 'enum', [ 'active', 'inactive' ]
+        attribute 'vehicleLeaving', 'enum', [ 'active', 'inactive' ]
+
         command 'learnOn'
         command 'learnOff'
         command 'restart'
@@ -72,13 +88,12 @@ metadata {
                 type: 'text',
                 title: 'Device Password <i>(if required)</i>',
                 required: false
-        
+
         input name: 'childrenEnable',
             type: 'bool',
             title: "<b>Enable Child Devices?</b>",
             defaultValue: false,
             required: false
-
 
         input name: 'logEnable',    // if enabled the library will log debug details
             type: 'bool',
@@ -129,7 +144,6 @@ public void uninstalled() {
     log.info "${device} driver uninstalled"
 }
 
-
 // the parse method is invoked by the API library when messages are received
 public void parse(Map message) {
     if (logEnable) { log.debug "ESPHome received: ${message}" }
@@ -158,7 +172,7 @@ private void doParseEntity(Map message) {
     if (message.platform == 'binary') {
         if (message.name == "Motion") {
             state.motionKey = message.key as Long
-            getMotionDevice(message.key)
+            getMotionDevice(message.key, message.name)
         }
         if (message.name == "Obstruction") {
             state.obstructionKey = message.key as Long
@@ -180,8 +194,20 @@ private void doParseEntity(Map message) {
             getDryContactOpenDevice(message.key)
         }
         if (message.name == "Dry contact close") {
-            state.dryContactOpenKey = message.key as Long
+            state.dryContactCloseKey = message.key as Long
             getDryContactCloseDevice(message.key)
+        }
+        if (message.name == "Vehicle detected") {
+            state.vehicleDetectedKey = message.key as Long
+            getVehicleDetectedDevice(message.key)
+        }
+        if (message.name == "Vehicle leaving") {
+            state.vehicleLeavingKey = message.key as Long
+            getMotionDevice(message.key, message.name)
+        }
+        if (message.name == "Vehicle arriving") {
+            state.vehicleArrivingKey = message.key as Long
+            getMotionDevice(message.key, message.name)
         }
         return
     }
@@ -197,7 +223,15 @@ private void doParseEntity(Map message) {
     if (message.platform == 'switch') {
         if (message.name == "Learn") {
             state.learnKey = message.key as Long
-            getLearnDevice(message.key)
+            getSwitchDevice(message.key, message.name)
+        }
+        if (message.name == "LASER") {
+            state.laserKey = message.key as Long
+            getSwitchDevice(message.key, message.name)
+        }
+        if (message.name == "LED") {
+            state.ledKey = message.key as Long
+            getSwitchDevice(message.key, message.name)
         }
         return
     }
@@ -217,6 +251,15 @@ private void doParseEntity(Map message) {
         if (message.deviceClass == 'signal_strength') {
             state.signalStrengthKey = message.key
         }
+        if (message.name == "Voltage") {
+            state.voltageKey = message.key as Long
+        }
+        if (message.name == "Paired Devices") {
+            state.pairedDevicesKey = message.key as Long
+        }
+        if (message.name == "Vehicle distance actual filtered") {
+            state.vehicleDistanceActualFilteredKey = message.key as Long
+        }
         return
     }
 
@@ -230,7 +273,50 @@ private void doParseEntity(Map message) {
         if (message.name == "Toggle door") {
             state.toggleKey = message.key
         }
+        // skipping Query openings, Query status, Safe mode boot
         return
+    }
+
+    if (message.platform == 'number') {
+        if (message.name == "Closing Delay") {
+            state.closingDelayKey = message.key
+        }
+        if (message.name == "Vehicle distance target") {
+            state.vehicleDistanceTargetKey = message.key
+        }
+        if (message.name == "Closing duration") {
+            state.closingDurationKey = message.key
+        }
+        if (message.name == "Opening duration") {
+            state.openingDurationKey = message.key
+        }
+        if (message.name == "Rolling code counter") {
+            state.rollingCodeCounterKey = message.key
+        }
+        if (message.name == "Client ID") {
+            state.clientIdKey = message.key
+        }
+        return
+    }
+
+    if (message.platform == 'text') {
+        if (message.name == "Firmware Version") {
+            state.firmwareVersionKey = message.key
+        }
+        return
+    }
+}
+
+private void updateVehicleMotionState() {
+    boolean arrivingActive = state.vehicleArrivingActive ?: false
+    boolean leavingActive = state.vehicleLeavingActive ?: false
+
+    String newVehicleMotionState = (arrivingActive || leavingActive) ? "active" : "inactive"
+
+    if (device.currentValue("vehicleMotion") != newVehicleMotionState) {
+        String descriptionText = "Vehicle motion is ${newVehicleMotionState}"
+        sendEvent(name: "vehicleMotion", value: newVehicleMotionState, descriptionText: descriptionText, type: "digital")
+        if (logTextEnable) { log.info descriptionText }
     }
 }
 
@@ -282,7 +368,7 @@ private void doParseState(Map message) {
 
     if (state.learnKey as Long == message.key) {
         String value = message.state ? "on" : "off"
-        sendDeviceEvent("learn", value, type, "Learn", getLearnDevice(message.key), "switch")
+        sendDeviceEvent("learn", value, type, "Learn", getSwitchDevice(message.key, "Learn"), "switch")
         return
     }
 
@@ -329,18 +415,113 @@ private void doParseState(Map message) {
         return
     }
 
-    if (state.signalStrengthKey as Long == message.key && message.hasState) {
-        Integer rssi = Math.round(message.state as Float)
-        String unit = "dBm"
-        if (device.currentValue("rssi") != rssi) {
-            descriptionText = "${device} rssi is ${rssi}"
-            sendEvent(name: "rssi", value: rssi, unit: unit, type: type, descriptionText: descriptionText)
-            if (logTextEnable) { log.info descriptionText }
-        }
+    // if (state.signalStrengthKey as Long == message.key && message.hasState) {
+    //     Integer rssi = Math.round(message.state as Float)
+    //     String unit = "dBm"
+    //     if (device.currentValue("rssi") != rssi) {
+    //         descriptionText = "${device} rssi is ${rssi}"
+    //         sendEvent(name: "rssi", value: rssi, unit: unit, type: type, descriptionText: descriptionText)
+    //         if (logTextEnable) { log.info descriptionText }
+    //     }
+    //     return
+    // }
+
+    if (state.vehicleDetectedKey as Long == message.key && message.hasState) {
+        String value = message.state ? "present" : "not present"
+        sendDeviceEvent("presence", value, type, "Presence", getVehicleDetectedDevice(message.key), null)
+        return
+    }
+
+    if (state.voltageKey as Long == message.key) {
+        int value = message.state as int
+        sendDeviceEvent("voltage", value, type, "Voltage")
+        return
+    }
+
+    if (state.pairedDevicesKey as Long == message.key) {
+        int value = message.state as int
+        sendDeviceEvent("pairedDevices", value, type, "Paired Devices")
+        return
+    }
+
+    // if (state.vehicleDistanceActualFilteredKey as Long == message.key) {
+    //     int value = message.state as int
+    //     sendDeviceEvent("vehicleDistanceActualFiltered", value, type, "Vehicle distance actual filtered")
+    //     return
+    // }
+
+    if (state.closingDelayKey as Long == message.key) {
+        int value = message.state as int
+        sendDeviceEvent("closingDelay", value, type, "Closing Delay")
+        return
+    }
+
+    if (state.vehicleDistanceTargetKey as Long == message.key) {
+        int value = message.state as int
+        sendDeviceEvent("vehicleDistanceTarget", value, type, "Vehicle distance target")
+        return
+    }
+
+    if (state.closingDurationKey as Long == message.key) {
+        int value = message.state as int
+        sendDeviceEvent("closingDuration", value, type, "Closing duration")
+        return
+    }
+
+    if (state.openingDurationKey as Long == message.key) {
+        int value = message.state as int
+        sendDeviceEvent("openingDuration", value, type, "Opening duration")
+        return
+    }
+
+    if (state.rollingCodeCounterKey as Long == message.key) {
+        int value = message.state as int
+        sendDeviceEvent("rollingCodeCounter", value, type, "Rolling code counter")
+        return
+    }
+
+    if (state.clientIdKey as Long == message.key) {
+        int value = message.state as int
+        sendDeviceEvent("clientId", value, type, "Client ID")
+        return
+    }
+
+    if (state.firmwareVersionKey as Long == message.key) {
+        String value = message.state
+        sendDeviceEvent("firmwareVersion", value, type, "Firmware Version")
+        return
+    }
+
+    if (state.laserKey as Long == message.key) {
+        String value = message.state ? "on" : "off"
+        sendDeviceEvent("laser", value, type, "LASER", getSwitchDevice(message.key, "LASER"), "switch")
+        return
+    }
+
+    if (state.ledKey as Long == message.key) {
+        String value = message.state ? "on" : "off"
+        sendDeviceEvent("led", value, type, "LED", getSwitchDevice(message.key, "LED"), "switch")
+        return
+    }
+
+    if (state.vehicleArrivingKey as Long == message.key) {
+        String value = message.state ? "active" : "inactive"
+        sendDeviceEvent("motion", value, type, "Vehicle arriving", getMotionDevice(message.key, message.name))
+        state.vehicleArrivingActive = message.state
+        sendDeviceEvent("vehicleArriving", value, type, "Vehicle arriving")
+        updateVehicleMotionState()
+        return
+    }
+
+    if (state.vehicleLeavingKey as Long == message.key) {
+        String value = message.state ? "active" : "inactive"
+        sendDeviceEvent("motion", value, type, "Vehicle leaving", getMotionDevice(message.key, message.name))
+        state.vehicleLeavingActive = message.state
+        sendDeviceEvent("vehicleLeaving", value, type, "Vehicle Leaving")
+        updateVehicleMotionState()
         return
     }
 }
-
 
 // child device management
 private void sendDeviceEvent(name, value, type, description, child = null, childEventName = null, isStateChange = null) {
@@ -363,7 +544,7 @@ private void sendDeviceEvent(name, value, type, description, child = null, child
     }
 
 }
-                               
+
 private DeviceWrapper getOrCreateDevice(key, deviceType, label = null) {
     if (key == null || !settings.childrenEnable) {
         return null
@@ -374,7 +555,7 @@ private DeviceWrapper getOrCreateDevice(key, deviceType, label = null) {
         d = addChildDevice(
             "hubitat",
             "Generic Component ${deviceType}",
-            dni                            
+            dni
         )
         d.name = "${device.label} ${label?:deviceType}"
         d.label = "${device.label} ${label?:deviceType}"
@@ -382,16 +563,16 @@ private DeviceWrapper getOrCreateDevice(key, deviceType, label = null) {
     return d
 }
 
-private DeviceWrapper getMotionDevice(key) {
-    return getOrCreateDevice(key, "Motion Sensor")
+private DeviceWrapper getMotionDevice(key, name = null) {
+    return getOrCreateDevice(key, "Motion Sensor", name)
 }
 
 private DeviceWrapper getButtonDevice(key) {
     return getOrCreateDevice(key, "Button Controller", "Button")
 }
 
-private DeviceWrapper getLearnDevice(key) {
-    return getOrCreateDevice(key, "Switch", "Learn")
+private DeviceWrapper getSwitchDevice(key, name = null) {
+    return getOrCreateDevice(key, "Switch", name)
 }
 
 private DeviceWrapper getLightDevice(key) {
@@ -418,6 +599,9 @@ private DeviceWrapper getDryContactCloseDevice(key) {
     return getOrCreateDevice(key, "Contact Sensor", "Close Dry Contact")
 }
 
+private DeviceWrapper getVehicleDetectedDevice(key) {
+    return getOrCreateDevice(key, "Presence Sensor", "Vehicle Detected")
+}
 
 // driver commands
 public void open() {
@@ -439,7 +623,7 @@ public void close() {
 public void stop() {
     if (state.doorKey) {
         // API library cover command, entity key for the cover is required
-        if (logTextEnable) { log.info "${device} close" }
+        if (logTextEnable) { log.info "${device} stop" }
         espHomeCoverCommand(key: state.doorKey as Long, stop: 1)
     }
 }
@@ -459,7 +643,7 @@ public void off() {
 }
 
 public void lock() {
-    if (state.lockKey) {           
+    if (state.lockKey) {
         if (logTextEnable) { log.info "${device} locked" }
         espHomeLockCommand(key: state.lockKey as Long, lockCommand: LOCK_LOCK)
     }
@@ -474,14 +658,41 @@ public void unlock() {
 
 public void learnOn() {
     if (logTextEnable) { log.info "${device} on" }
-    espHomeSwitchCommand(key: settings.learn as Long, state: true)
+    espHomeSwitchCommand(key: state.learnKey as Long, state: true)
 }
 
 public void learnOff() {
     if (logTextEnable) { log.info "${device} off" }
-    espHomeSwitchCommand(key: settings.learn as Long, state: false)
+    espHomeSwitchCommand(key: state.learnKey as Long, state: false)
 }
 
+public void laserOn() {
+    if (state.laserKey) {
+        if (logTextEnable) { log.info "${device} laser on" }
+        espHomeSwitchCommand(key: state.laserKey as Long, state: true)
+    }
+}
+
+public void laserOff() {
+    if (state.laserKey) {
+        if (logTextEnable) { log.info "${device} laser off" }
+        espHomeSwitchCommand(key: state.laserKey as Long, state: false)
+    }
+}
+
+public void ledOn() {
+    if (state.ledKey) {
+        if (logTextEnable) { log.info "${device} LED on" }
+        espHomeSwitchCommand(key: state.ledKey as Long, state: true)
+    }
+}
+
+public void ledOff() {
+    if (state.ledKey) {
+        if (logTextEnable) { log.info "${device} LED off" }
+        espHomeSwitchCommand(key: state.ledKey as Long, state: false)
+    }
+}
 
 public void refresh() {
     log.info "${device} refresh"
@@ -510,7 +721,6 @@ public void toggle() {
         espHomeButtonCommand(key: state.toggleKey as Long)
     }
 }
-
 
 // child component commands
 public void componentOn(DeviceWrapper dw) {
